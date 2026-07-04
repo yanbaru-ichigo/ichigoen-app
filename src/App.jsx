@@ -1362,7 +1362,10 @@ function AdminSettings({ settings, saveSettings, reservations }) {
 
 /* ============ トップ & ルート ============ */
 export default function App() {
-  const [view, setView] = useState("home");
+  const [view, setView] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.has("admin") ? "admin" : "home";
+  });
   const [reservations, setReservations] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
