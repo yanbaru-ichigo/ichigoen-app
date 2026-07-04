@@ -1437,7 +1437,7 @@ export default function App() {
             <a className="home-link" href={FARM.mapUrl} target="_blank" rel="noreferrer">📍 アクセス（Googleマップで開く）</a>
             <a className="home-link" href={FARM.instagram} target="_blank" rel="noreferrer">📷 Instagramはこちら</a>
           </div>
-          <button type="button" className="admin-link" onClick={() => setView("admin")}>🔑 管理者の方はこちら（公開時は非表示にできます）</button>
+          {/* 管理者リンクは非表示（管理者はメール内URLからアクセス） */}
         </div>
       ) : view === "book" ? (
         <BookingApp reservations={reservations} settings={settings} refresh={refresh} goHome={() => setView("home")} />
