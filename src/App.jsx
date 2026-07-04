@@ -9,7 +9,7 @@ const SUPABASE_ANON_KEY =
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 /* ============ GAS連携 ============ */
-const GAS_URL = "https://script.google.com/macros/s/AKfycby4juYNfxT3ob39J5RqtrXOSbcLKZ-H-9dowoe4_v0UcbRz4obDXraDz8mvtcXRkc3C/exec";
+const GAS_URL = "https://script.google.com/macros/s/AKfycbxpO5U4CdyBtVzclpxwCFZfNksxgR_VvCU1SiHa6rGfCyIwrNro10Hnz4a2ceajJgl2/exec";
 
 /**
  * GAS にメール送信リクエストを送る（補助機能）。
