@@ -481,9 +481,6 @@ function BookingApp({ reservations, settings, refresh, goHome }) {
           <p className="done-sub">予約番号：<b className="rid">{done.id}</b></p>
           <p className="done-note">キャンセルの際に必要になりますので、予約番号をお控えください。</p>
         </div>
-        <MailPreview title="ご予約確認メール（お客様宛）" to={done.email} body={customerMail(done)} />
-        <MailPreview title="新規予約通知メール（管理者宛）" to={FARM.email} body={adminNewMail(done)} />
-        <p className="demo-note">※ 上記の内容がGAS経由で自動送信されます。</p>
         <button type="button" className="btn primary wide" onClick={goHome}>トップへ戻る</button>
       </div>
     );
@@ -669,9 +666,6 @@ function CancelApp({ settings, refresh, goHome }) {
           <h2 className="done-title">予約はキャンセルされました</h2>
           <p className="done-sub">またのご予約お待ちしております。</p>
         </div>
-        <MailPreview title="キャンセル完了メール（お客様宛）" to={cancelled.email} body={customerCancelMail(cancelled)} />
-        <MailPreview title="キャンセル通知メール（管理者宛）" to={FARM.email} body={adminCancelMail(cancelled)} />
-        <p className="demo-note">※ 上記の内容がGAS経由で自動送信されます。</p>
         <button type="button" className="btn primary wide" onClick={goHome}>トップへ戻る</button>
       </div>
     );
@@ -1004,12 +998,6 @@ function AdminDash({ reservations, refresh, settings }) {
               <div><b>{cancelDone.name} 様</b>（{cancelDone.people}名・{yen(cancelDone.total)}）</div>
               <div className="res-sub">{jpDate(cancelDone.date)} {cancelDone.slot}〜｜{cancelDone.id}</div>
             </div>
-            <MailPreview
-              title="キャンセル通知メール（予約者宛）"
-              to={cancelDone.email}
-              body={adminCancelNotifyMail(cancelDone, cancelReason)}
-            />
-            <p className="demo-note">※ 上記の内容がGAS経由で自動送信されます。</p>
             <button type="button" className="btn primary wide" onClick={closeCancel}>閉じる</button>
           </div>
         </div>
