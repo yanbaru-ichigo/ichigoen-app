@@ -6,7 +6,10 @@ import * as XLSX from "xlsx";
 const SUPABASE_URL = "https://cnhntxoxrvjajeyvibnu.supabase.co";
 const SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNuaG50eG94cnZqYWpleXZpYm51Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMxNTE4NzUsImV4cCI6MjA5ODcyNzg3NX0.gskPbydZS8zsuE8GdCpYR_RVS0Ta1104HFImDjVP-LQ";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: false },
+});
+const ADMIN_EMAIL = "yanbaru.1066@gmail.com";
 
 /* ============ GAS連携 ============ */
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwxfRejX5UZ1g4e41SoeGjHKxMtyGtZa8ab5kqvLkyYz0WGXSh6cMYkgRsF-5XiMZJc/exec";
@@ -55,7 +58,6 @@ const DEFAULT_SETTINGS = {
   defaultDayCapacity: "",
   monthSettings: {},
   dateSettings: {},
-  adminPassword: "1066",
 };
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -106,6 +108,42 @@ async function fetchReservations() {
     return [];
   }
   return (data || []).map(rowToReservation);
+}
+
+/* 公開向け空き状況（PIIなし）。カレンダー・予約フォームの空き判定専用 */
+async function fetchAvailability() {
+  const { data, error } = await supabase.rpc("get_availability");
+  if (error) {
+    console.error("availability fetch error", error);
+    return [];
+  }
+  return data || [];
+}
+
+/* 自己キャンセル：予約番号＋電話番号が一致するactiveな予約のみ照会 */
+async function lookupReservationForCancel(id, phone) {
+  const { data, error } = await supabase.rpc("lookup_reservation_for_cancel", {
+    p_id: id,
+    p_phone: phone,
+  });
+  if (error) {
+    console.error("lookup_reservation_for_cancel error", error);
+    return null;
+  }
+  return data?.[0] ?? null;
+}
+
+/* 自己キャンセル：同条件でキャンセルを実行し、更新後の行を返す */
+async function cancelReservationRpc(id, phone) {
+  const { data, error } = await supabase.rpc("cancel_reservation", {
+    p_id: id,
+    p_phone: phone,
+  });
+  if (error) {
+    console.error("cancel_reservation error", error);
+    return null;
+  }
+  return data?.[0] ?? null;
 }
 
 async function insertReservation(r) {
@@ -347,7 +385,7 @@ function MailPreview({ title, to, body }) {
 }
 
 /* カレンダー */
-function Calendar({ ym, setYm, selected, onSelect, reservations, settings }) {
+function Calendar({ ym, setYm, selected, onSelect, availability, settings }) {
   const [year, month] = ym;
   const first = new Date(year, month, 1);
   const startDow = first.getDay();
@@ -377,7 +415,7 @@ function Calendar({ ym, setYm, selected, onSelect, reservations, settings }) {
           if (d === null) return <div key={"e" + i} />;
           const iso = fmtDate(new Date(year, month, d));
           const isPast = iso < today;
-          const av = dayAvailability(iso, reservations, settings);
+          const av = dayAvailability(iso, availability, settings);
           const disabled = isPast || !av.anyOpen;
           const mark = isPast ? "" : av.anyOpen ? (av.totalRemaining <= 10 ? "△" : "○") : "×";
           return (
@@ -405,7 +443,7 @@ function Calendar({ ym, setYm, selected, onSelect, reservations, settings }) {
 }
 
 /* ============ 予約フロー ============ */
-function BookingApp({ reservations, settings, refresh, goHome }) {
+function BookingApp({ availability, settings, refresh, goHome }) {
   const [step, setStep] = useState(1);
   const [ym, setYm] = useState(() => { const n = new Date(); return [n.getFullYear(), n.getMonth()]; });
   const [date, setDate] = useState("");
@@ -422,13 +460,13 @@ function BookingApp({ reservations, settings, refresh, goHome }) {
 
   const total = calcTotal(counts);
   const people = calcPeople(counts);
-  const st = date && slot ? slotStatus(date, slot, reservations, settings) : null;
+  const st = date && slot ? slotStatus(date, slot, availability, settings) : null;
 
   const submit = async () => {
     setSending(true);
     setError("");
     // 最新データで空き再確認
-    const latest = await fetchReservations();
+    const latest = await fetchAvailability();
     const check = slotStatus(date, slot, latest, settings);
     if (check.closed || check.remaining < people) {
       setError("申し訳ありません。ただいまこの時間帯の空きが不足しています。別の日時をお選びください。");
@@ -500,13 +538,13 @@ function BookingApp({ reservations, settings, refresh, goHome }) {
       {step === 1 && (
         <div className="card">
           <h2 className="sec-title">ご希望の日付を選択</h2>
-          <Calendar ym={ym} setYm={setYm} selected={date} onSelect={(d) => { setDate(d); setSlot(""); }} reservations={reservations} settings={settings} />
+          <Calendar ym={ym} setYm={setYm} selected={date} onSelect={(d) => { setDate(d); setSlot(""); }} availability={availability} settings={settings} />
           {date && (
             <>
               <h2 className="sec-title">{jpDate(date)} の時間を選択</h2>
               <div className="slot-list">
-                {SLOTS.filter((s) => !slotStatus(date, s, reservations, settings).closed).map((s) => {
-                  const ss = slotStatus(date, s, reservations, settings);
+                {SLOTS.filter((s) => !slotStatus(date, s, availability, settings).closed).map((s) => {
+                  const ss = slotStatus(date, s, availability, settings);
                   const dis = ss.remaining <= 0;
                   return (
                     <button type="button" key={s} disabled={dis}
@@ -621,38 +659,34 @@ function CancelApp({ settings, refresh, goHome }) {
 
   const search = async () => {
     setError("");
-    const latest = await fetchReservations();
-    const r = latest.find(
-      (x) => x.id.toUpperCase() === rid.trim().toUpperCase() &&
-        x.phone.replace(/[-\s]/g, "") === phone.trim().replace(/[-\s]/g, "")
-    );
+    const r = await lookupReservationForCancel(rid.trim(), phone.trim());
     if (!r) { setError("予約が見つかりませんでした。予約番号と電話番号をご確認ください。"); return; }
-    if (r.status === "cancelled") { setError("この予約はすでにキャンセルされています。"); return; }
     setTarget(r);
   };
 
   const doCancel = async () => {
     setBusy(true);
-    const ok = await updateReservation(target.id, {
-      status: "cancelled",
-    });
-    if (ok) {
+    const r = await cancelReservationRpc(target.id, target.phone);
+    if (r) {
       await refresh();
       // GAS にキャンセル通知を送る（お客様キャンセル）
       sendToGAS({
         type: "cancel",
-        id: target.id,
-        date: target.date,
-        slot: target.slot,
-        name: target.name,
-        phone: target.phone,
-        email: target.email,
-        counts: target.counts,
-        total: target.total,
-        people: target.people,
-        note: target.note,
+        id: r.id,
+        date: r.date,
+        slot: r.slot,
+        name: r.name,
+        phone: r.phone,
+        email: r.email,
+        counts: r.counts,
+        total: r.total,
+        people: r.people,
+        note: r.note,
       });
-      setCancelled({ ...target, status: "cancelled" });
+      setCancelled(r);
+    } else {
+      setError("この予約はすでに処理されています。最初からやり直してください。");
+      setTarget(null);
     }
     setConfirm(false);
     setBusy(false);
@@ -720,13 +754,31 @@ function CancelApp({ settings, refresh, goHome }) {
 }
 
 /* ============ 管理者アプリ ============ */
-function AdminApp({ reservations, settings, refresh, saveSettings, goHome }) {
-  const [authed, setAuthed] = useState(false);
+function AdminApp({ session, settings, saveSettings, goHome }) {
   const [pw, setPw] = useState("");
   const [pwErr, setPwErr] = useState("");
+  const [signingIn, setSigningIn] = useState(false);
   const [tab, setTab] = useState("dash");
+  const [reservations, setReservations] = useState([]);
 
-  if (!authed) {
+  const refreshReservations = async () => {
+    setReservations(await fetchReservations());
+  };
+
+  useEffect(() => {
+    if (session) refreshReservations();
+  }, [session]);
+
+  const doLogin = async () => {
+    if (!pw || signingIn) return;
+    setSigningIn(true);
+    setPwErr("");
+    const { error } = await supabase.auth.signInWithPassword({ email: ADMIN_EMAIL, password: pw });
+    if (error) setPwErr("パスワードが違います");
+    setSigningIn(false);
+  };
+
+  if (!session) {
     return (
       <div className="page">
         <div className="card center-card">
@@ -734,15 +786,11 @@ function AdminApp({ reservations, settings, refresh, saveSettings, goHome }) {
           {pwErr && <div className="alert">{pwErr}</div>}
           <label className="fld">パスワード
             <input type="password" value={pw} onChange={(e) => setPw(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && pw === settings.adminPassword) setAuthed(true); }} />
+              onKeyDown={(e) => { if (e.key === "Enter") doLogin(); }} />
           </label>
-          <p className="muted small">初期パスワード：1066（設定タブで変更できます）</p>
           <div className="btn-row">
             <button type="button" className="btn ghost" onClick={goHome}>戻る</button>
-            <button type="button" className="btn primary" onClick={() => {
-              if (pw === settings.adminPassword) { setAuthed(true); setPwErr(""); }
-              else setPwErr("パスワードが違います");
-            }}>ログイン</button>
+            <button type="button" className="btn primary" disabled={signingIn} onClick={doLogin}>ログイン</button>
           </div>
         </div>
       </div>
@@ -757,8 +805,8 @@ function AdminApp({ reservations, settings, refresh, saveSettings, goHome }) {
         ))}
         <button type="button" className="tab-btn exit" onClick={goHome}>閉じる</button>
       </div>
-      {tab === "dash" && <AdminDash reservations={reservations} refresh={refresh} settings={settings} />}
-      {tab === "checkin" && <AdminCheckin reservations={reservations} refresh={refresh} />}
+      {tab === "dash" && <AdminDash reservations={reservations} refresh={refreshReservations} settings={settings} />}
+      {tab === "checkin" && <AdminCheckin reservations={reservations} refresh={refreshReservations} />}
       {tab === "settings" && <AdminSettings settings={settings} saveSettings={saveSettings} reservations={reservations} />}
     </div>
   );
@@ -774,9 +822,7 @@ function AdminDash({ reservations, refresh, settings }) {
   /* --- 管理者キャンセル --- */
   const [cancelTarget, setCancelTarget] = useState(null);
   const [cancelReason, setCancelReason] = useState("");
-  const [cancelStep, setCancelStep] = useState("reason"); // "reason" | "confirm" | "password"
-  const [cancelPw, setCancelPw] = useState("");
-  const [cancelPwErr, setCancelPwErr] = useState("");
+  const [cancelStep, setCancelStep] = useState("reason"); // "reason" | "confirm" | "final"
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelDone, setCancelDone] = useState(null);
 
@@ -784,8 +830,6 @@ function AdminDash({ reservations, refresh, settings }) {
     setCancelTarget(r);
     setCancelReason("");
     setCancelStep("reason");
-    setCancelPw("");
-    setCancelPwErr("");
     setCancelDone(null);
   };
   const closeCancel = () => {
@@ -793,12 +837,8 @@ function AdminDash({ reservations, refresh, settings }) {
     setCancelDone(null);
   };
   const proceedToConfirm = () => setCancelStep("confirm");
-  const proceedToPassword = () => { setCancelStep("password"); setCancelPw(""); setCancelPwErr(""); };
+  const proceedToFinal = () => setCancelStep("final");
   const execCancel = async () => {
-    if (cancelPw !== (settings.adminPassword || "1066")) {
-      setCancelPwErr("パスワードが違います");
-      return;
-    }
     setCancelBusy(true);
     const noteValue = cancelTarget.note
       ? `${cancelTarget.note}｜管理者キャンセル: ${cancelReason}`
@@ -964,21 +1004,20 @@ function AdminDash({ reservations, refresh, settings }) {
                 </div>
                 <div className="btn-row modal-btns">
                   <button type="button" className="btn ghost" onClick={() => setCancelStep("reason")}>戻る</button>
-                  <button type="button" className="btn danger" onClick={proceedToPassword}>はい</button>
+                  <button type="button" className="btn danger" onClick={proceedToFinal}>はい</button>
                 </div>
               </>
             )}
-            {cancelStep === "password" && (
+            {cancelStep === "final" && (
               <>
-                <p className="modal-msg">管理者パスワードを入力</p>
-                {cancelPwErr && <div className="alert">{cancelPwErr}</div>}
-                <label className="fld cancel-reason-fld">パスワード
-                  <input type="password" value={cancelPw} onChange={(e) => setCancelPw(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && cancelPw) execCancel(); }} />
-                </label>
+                <p className="modal-msg">この操作は取り消せません。よろしければ実行してください。</p>
+                <div className="cancel-target-info">
+                  <div><b>{cancelTarget.name} 様</b>（{cancelTarget.people}名・{yen(cancelTarget.total)}）</div>
+                  <div className="res-sub">{jpDate(cancelTarget.date)} {cancelTarget.slot}〜｜{cancelTarget.id}</div>
+                </div>
                 <div className="btn-row modal-btns">
                   <button type="button" className="btn ghost" onClick={() => setCancelStep("confirm")}>戻る</button>
-                  <button type="button" className="btn danger" disabled={!cancelPw || cancelBusy} onClick={execCancel}>
+                  <button type="button" className="btn danger" disabled={cancelBusy} onClick={execCancel}>
                     {cancelBusy ? "処理中…" : "キャンセルを実行"}
                   </button>
                 </div>
@@ -1157,8 +1196,9 @@ function AdminSettings({ settings, saveSettings, reservations }) {
     flash("個別設定を削除しました");
   };
   const savePw = async () => {
-    if (newPw.trim().length < 4) { flash("パスワードは4文字以上にしてください"); return; }
-    await saveSettings({ ...settings, adminPassword: newPw.trim() });
+    if (newPw.trim().length < 6) { flash("パスワードは6文字以上にしてください"); return; }
+    const { error } = await supabase.auth.updateUser({ password: newPw.trim() });
+    if (error) { flash(error.message); return; }
     setNewPw("");
     flash("パスワードを変更しました");
   };
@@ -1366,11 +1406,12 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     return params.has("admin") ? "admin" : "home";
   });
-  const [reservations, setReservations] = useState([]);
+  const [availability, setAvailability] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [tapInfo, setTapInfo] = useState({ n: 0, t: 0 });
+  const [session, setSession] = useState(null);
   const footerTap = () => {
     const nowT = Date.now();
     const cnt = nowT - tapInfo.t < 1500 ? tapInfo.n + 1 : 1;
@@ -1378,10 +1419,16 @@ export default function App() {
     else setTapInfo({ n: cnt, t: nowT });
   };
 
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
   const refresh = async () => {
     try {
-      const [r, s] = await Promise.all([fetchReservations(), fetchSettings()]);
-      setReservations(r);
+      const [a, s] = await Promise.all([fetchAvailability(), fetchSettings()]);
+      setAvailability(a);
       setSettings({ ...DEFAULT_SETTINGS, ...s });
       setLoadError("");
     } catch (e) {
@@ -1443,11 +1490,11 @@ export default function App() {
           {/* 管理者リンクは非表示（管理者はメール内URLからアクセス） */}
         </div>
       ) : view === "book" ? (
-        <BookingApp reservations={reservations} settings={settings} refresh={refresh} goHome={() => setView("home")} />
+        <BookingApp availability={availability} settings={settings} refresh={refresh} goHome={() => setView("home")} />
       ) : view === "cancel" ? (
         <CancelApp settings={settings} refresh={refresh} goHome={() => setView("home")} />
       ) : (
-        <AdminApp reservations={reservations} settings={settings} refresh={refresh} saveSettings={saveSettingsHandler} goHome={() => setView("home")} />
+        <AdminApp session={session} settings={settings} saveSettings={saveSettingsHandler} goHome={() => setView("home")} />
       )}
 
       <footer className="footer" onClick={footerTap}>
