@@ -1,11 +1,21 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
+import {
+  SLOTS,
+  INITIAL_ACTIVE_SLOTS,
+  DEFAULT_SETTINGS,
+  numOr,
+  wdOf,
+  resolveDay,
+  slotStatus,
+  dayAvailability,
+} from "./lib/availability.js";
 
 /* ============ Supabase ============ */
 const SUPABASE_URL = "https://cnhntxoxrvjajeyvibnu.supabase.co";
 const SUPABASE_ANON_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNuaG50eG94cnZqYWpleXZpYm51Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMxNTE4NzUsImV4cCI6MjA5ODcyNzg3NX0.gskPbydZS8zsuE8GdCpYR_RVS0Ta1104HFImDjVP-LQ";
+  "eyJhbGci••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: false },
 });
@@ -39,8 +49,6 @@ const FARM = {
   mapUrl: "https://www.google.com/maps/place/%E3%82%84%E3%82%93%E3%81%B0%E3%82%8B%E3%81%84%E3%81%A1%E3%81%94%E5%9C%92/@26.4844974,127.9817773,17z/data=!3m1!4b1!4m6!3m5!1s0x34e501daa8c7b7f7:0xa8d5085d9fda8e06!8m2!3d26.4844974!4d127.9817773!16s%2Fg%2F11fqg74ds2?hl=ja",
   instagram: "https://www.instagram.com/yanbaruichigoen/",
 };
-const SLOTS = ["10:00", "11:00", "12:00", "13:00", "13:30", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00"];
-const INITIAL_ACTIVE_SLOTS = ["10:00", "11:00", "12:00", "13:30", "14:00"];
 const CATS = [
   { key: "adult", label: "大人（中学生以上）", price: 2500 },
   { key: "elem", label: "小学生", price: 2000 },
@@ -52,13 +60,6 @@ const TERMS = [
   "転倒防止のためサンダルやハイヒールでのご来園はご遠慮ください",
   "いちごの生育状況などにより実施できない場合がありますのでご了承ください",
 ];
-const DEFAULT_SETTINGS = {
-  activeSlots: [...INITIAL_ACTIVE_SLOTS],
-  defaultCapacity: 20,
-  defaultDayCapacity: "",
-  monthSettings: {},
-  dateSettings: {},
-};
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
 /* ============ Supabase ストレージ ============ */
@@ -82,25 +83,6 @@ function rowToReservation(row) {
   };
 }
 
-/* アプリ内オブジェクト → DB行への変換（camelCase → snake_case） */
-function reservationToRow(r) {
-  return {
-    id: r.id,
-    date: r.date,
-    slot: r.slot,
-    counts: r.counts,
-    total: r.total,
-    people: r.people,
-    name: r.name,
-    phone: r.phone,
-    email: r.email,
-    note: r.note || "",
-    status: r.status,
-    checked_in: r.checkedIn ?? false,
-    created_at: r.createdAt,
-  };
-}
-
 async function fetchReservations() {
   const { data, error } = await supabase.from("reservations").select("*");
   if (error) {
@@ -110,14 +92,18 @@ async function fetchReservations() {
   return (data || []).map(rowToReservation);
 }
 
-/* 公開向け空き状況（PIIなし）。カレンダー・予約フォームの空き判定専用 */
-async function fetchAvailability() {
-  const { data, error } = await supabase.rpc("get_availability");
-  if (error) {
-    console.error("availability fetch error", error);
-    return [];
+/* 公開向け空き状況（○/△/×の判定結果のみ。定員・予約人数の生データはサーバー側で止める） */
+async function fetchPublicAvailability(month, date) {
+  const params = new URLSearchParams({ month });
+  if (date) params.set("date", date);
+  try {
+    const res = await fetch(`/api/public-availability?${params.toString()}`);
+    if (!res.ok) throw new Error("bad status " + res.status);
+    return await res.json();
+  } catch (e) {
+    console.error("public availability fetch error", e);
+    return { days: {}, slots: date ? {} : null };
   }
-  return data || [];
 }
 
 /* 自己キャンセル：予約番号＋電話番号が一致するactiveな予約のみ照会 */
@@ -146,13 +132,25 @@ async function cancelReservationRpc(id, phone) {
   return data?.[0] ?? null;
 }
 
-async function insertReservation(r) {
-  const { error } = await supabase.from("reservations").insert(reservationToRow(r));
+/* 予約登録：定員チェックと登録をSupabase側で1トランザクションに行う（オーバーブッキング対策） */
+async function bookReservation(r) {
+  const { data, error } = await supabase.rpc("book_reservation", {
+    p_id: r.id,
+    p_date: r.date,
+    p_slot: r.slot,
+    p_counts: r.counts,
+    p_total: r.total,
+    p_people: r.people,
+    p_name: r.name,
+    p_phone: r.phone,
+    p_email: r.email,
+    p_note: r.note,
+  });
   if (error) {
-    console.error("reservation insert error", error);
-    return false;
+    console.error("book_reservation error", error);
+    return { ok: false, reason: "error" };
   }
-  return true;
+  return data?.[0] ?? { ok: false, reason: "error" };
 }
 
 async function updateReservation(id, fields) {
@@ -222,50 +220,6 @@ function breakdownLines(counts) {
   );
 }
 
-/* 設定の優先度：日別 ＞ 月別 ＞ 基本 */
-function numOr(v, fallback) {
-  return v === "" || v == null ? fallback : Number(v);
-}
-function wdOf(iso) {
-  const [y, m, d] = iso.split("-").map(Number);
-  return new Date(y, m - 1, d).getDay();
-}
-function resolveDay(dateIso, settings) {
-  const ds = settings.dateSettings[dateIso];
-  const ms = settings.monthSettings?.[dateIso.slice(0, 7)];
-  const weekdayClosed = !!ms?.closedWeekdays?.includes(wdOf(dateIso));
-  const dayClosed = !!ds?.closedAll || (weekdayClosed && !ds?.openOverride);
-  const dayCapacity = numOr(ds?.dayCapacity, numOr(ms?.dayCapacity, numOr(settings.defaultDayCapacity, null)));
-  const slotDefault = numOr(ms?.slotCapacity, settings.defaultCapacity);
-  return { ds, dayClosed, weekdayClosed, dayCapacity, slotDefault };
-}
-function slotStatus(dateIso, slot, reservations, settings) {
-  const { ds, dayClosed, dayCapacity, slotDefault } = resolveDay(dateIso, settings);
-  const slotSetting = ds?.slots?.[slot];
-  const mode = slotSetting?.mode || (slotSetting?.closed ? "closed" : "default");
-  const defaultOpen = !settings.activeSlots || settings.activeSlots.includes(slot);
-  const slotClosed = mode === "closed" || (mode === "default" && !defaultOpen);
-  const closed = dayClosed || slotClosed;
-  const capacity = numOr(slotSetting?.capacity, slotDefault);
-  const active = reservations.filter((r) => r.status === "active" && r.date === dateIso);
-  const booked = active.filter((r) => r.slot === slot).reduce((s, r) => s + r.people, 0);
-  const dayBooked = active.reduce((s, r) => s + r.people, 0);
-  let remaining = Math.max(0, capacity - booked);
-  if (dayCapacity != null) remaining = Math.min(remaining, Math.max(0, dayCapacity - dayBooked));
-  return { closed, capacity, booked, remaining, dayCapacity, dayBooked };
-}
-function dayAvailability(dateIso, reservations, settings) {
-  let anyOpen = false;
-  let totalRemaining = 0;
-  for (const slot of SLOTS) {
-    const st = slotStatus(dateIso, slot, reservations, settings);
-    if (!st.closed && st.remaining > 0) {
-      anyOpen = true;
-      totalRemaining += st.remaining;
-    }
-  }
-  return { anyOpen, totalRemaining };
-}
 function genId() {
   const s = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let id = "";
@@ -385,7 +339,7 @@ function MailPreview({ title, to, body }) {
 }
 
 /* カレンダー */
-function Calendar({ ym, setYm, selected, onSelect, availability, settings }) {
+function Calendar({ ym, setYm, selected, onSelect, publicDays }) {
   const [year, month] = ym;
   const first = new Date(year, month, 1);
   const startDow = first.getDay();
@@ -415,9 +369,9 @@ function Calendar({ ym, setYm, selected, onSelect, availability, settings }) {
           if (d === null) return <div key={"e" + i} />;
           const iso = fmtDate(new Date(year, month, d));
           const isPast = iso < today;
-          const av = dayAvailability(iso, availability, settings);
-          const disabled = isPast || !av.anyOpen;
-          const mark = isPast ? "" : av.anyOpen ? (av.totalRemaining <= 10 ? "△" : "○") : "×";
+          const status = publicDays?.[iso]; // "open" | "few" | "full" | undefined(読み込み中)
+          const disabled = isPast || status === "full" || !status;
+          const mark = isPast ? "" : status === "few" ? "△" : status === "open" ? "○" : status === "full" ? "×" : "";
           return (
             <button
               type="button"
@@ -443,7 +397,7 @@ function Calendar({ ym, setYm, selected, onSelect, availability, settings }) {
 }
 
 /* ============ 予約フロー ============ */
-function BookingApp({ availability, settings, refresh, goHome }) {
+function BookingApp({ goHome }) {
   const [step, setStep] = useState(1);
   const [ym, setYm] = useState(() => { const n = new Date(); return [n.getFullYear(), n.getMonth()]; });
   const [date, setDate] = useState("");
@@ -458,39 +412,52 @@ function BookingApp({ availability, settings, refresh, goHome }) {
   const [sending, setSending] = useState(false);
   const [done, setDone] = useState(null);
 
+  // 顧客向け空き状況（○/△/×の判定結果のみ。定員・残り人数の生データは持たない）
+  const [publicDays, setPublicDays] = useState({});
+  const [publicSlots, setPublicSlots] = useState(null);
+
+  const ymStr = () => { const [y, m] = ym; return `${y}-${String(m + 1).padStart(2, "0")}`; };
+
+  const refreshPublicStatus = async (forDate) => {
+    const res = await fetchPublicAvailability(ymStr(), forDate);
+    setPublicDays((prev) => ({ ...prev, ...res.days }));
+    if (forDate) setPublicSlots(res.slots || {});
+  };
+
+  useEffect(() => { refreshPublicStatus(date || undefined); }, [ym]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!date) { setPublicSlots(null); return; }
+    refreshPublicStatus(date);
+  }, [date]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const total = calcTotal(counts);
   const people = calcPeople(counts);
-  const st = date && slot ? slotStatus(date, slot, availability, settings) : null;
+  const slotState = date && slot ? publicSlots?.[slot] : null;
 
   const submit = async () => {
     setSending(true);
     setError("");
-    // 最新データで空き再確認
-    const latest = await fetchAvailability();
-    const check = slotStatus(date, slot, latest, settings);
-    if (check.closed || check.remaining < people) {
-      setError("申し訳ありません。ただいまこの時間帯の空きが不足しています。別の日時をお選びください。");
-      setSending(false);
-      setStep(1);
-      await refresh();
-      return;
-    }
     const r = {
       id: genId(),
       date, slot, counts, total, people,
       name: name.trim(), phone: phone.trim(), email: email.trim(),
       note: note.trim(),
-      status: "active",
-      checkedIn: false,
       createdAt: new Date().toISOString(),
     };
-    const ok = await insertReservation(r);
-    if (!ok) {
-      setError("保存に失敗しました。時間をおいて再度お試しください。");
+    const result = await bookReservation(r);
+    if (!result.ok) {
+      if (result.reason === "capacity_exceeded") {
+        setError("申し訳ありません。ただいまこの時間帯の空きが不足しています。別の日時をお選びください。");
+      } else if (result.reason === "closed") {
+        setError("申し訳ありません。この時間帯は現在受付を停止しています。別の日時をお選びください。");
+      } else {
+        setError("保存に失敗しました。時間をおいて再度お試しください。");
+      }
       setSending(false);
+      setStep(1);
+      await refreshPublicStatus(date || undefined);
       return;
     }
-    await refresh();
     // GAS にメール送信リクエストを送る（予約完了通知）
     sendToGAS({
       type: "booking",
@@ -538,20 +505,20 @@ function BookingApp({ availability, settings, refresh, goHome }) {
       {step === 1 && (
         <div className="card">
           <h2 className="sec-title">ご希望の日付を選択</h2>
-          <Calendar ym={ym} setYm={setYm} selected={date} onSelect={(d) => { setDate(d); setSlot(""); }} availability={availability} settings={settings} />
+          <Calendar ym={ym} setYm={setYm} selected={date} onSelect={(d) => { setDate(d); setSlot(""); }} publicDays={publicDays} />
           {date && (
             <>
               <h2 className="sec-title">{jpDate(date)} の時間を選択</h2>
               <div className="slot-list">
-                {SLOTS.filter((s) => !slotStatus(date, s, availability, settings).closed).map((s) => {
-                  const ss = slotStatus(date, s, availability, settings);
-                  const dis = ss.remaining <= 0;
+                {SLOTS.filter((s) => publicSlots?.[s] && publicSlots[s] !== "closed").map((s) => {
+                  const ss = publicSlots[s];
+                  const dis = ss === "full";
                   return (
                     <button type="button" key={s} disabled={dis}
                       className={"slot-btn" + (slot === s ? " selected" : "") + (dis ? " disabled" : "")}
                       onClick={() => setSlot(s)}>
                       <span className="slot-time">{s}</span>
-                      <span className="slot-info">{dis ? "満員" : `残り${ss.remaining}名`}</span>
+                      <span className="slot-info">{dis ? "満員" : ss === "few" ? "残りわずか" : "空きあり"}</span>
                     </button>
                   );
                 })}
@@ -568,7 +535,7 @@ function BookingApp({ availability, settings, refresh, goHome }) {
       {step === 2 && (
         <div className="card">
           <h2 className="sec-title">人数の入力</h2>
-          <p className="muted">{jpDate(date)} {slot}（残り {st?.remaining}名）</p>
+          <p className="muted">{jpDate(date)} {slot}{slotState === "few" ? "（残りわずか）" : ""}</p>
           {CATS.map((c) => (
             <div key={c.key} className="cat-row">
               <div>
@@ -582,12 +549,9 @@ function BookingApp({ availability, settings, refresh, goHome }) {
             <span>合計 {people}名</span>
             <span className="total-yen">{yen(total)}</span>
           </div>
-          {st && people > st.remaining && (
-            <div className="alert">この時間帯の残り枠（{st.remaining}名）を超えています。人数を調整するか、別の時間をお選びください。</div>
-          )}
           <div className="btn-row">
             <button type="button" className="btn ghost" onClick={() => setStep(1)}>戻る</button>
-            <button type="button" className="btn primary" disabled={people === 0 || (st && people > st.remaining)} onClick={() => setStep(3)}>次へ</button>
+            <button type="button" className="btn primary" disabled={people === 0} onClick={() => setStep(3)}>次へ</button>
           </div>
         </div>
       )}
@@ -752,7 +716,6 @@ function CancelApp({ settings, refresh, goHome }) {
     </div>
   );
 }
-
 /* ============ 管理者アプリ ============ */
 function AdminApp({ session, settings, saveSettings, goHome }) {
   const [pw, setPw] = useState("");
@@ -1406,7 +1369,6 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     return params.has("admin") ? "admin" : "home";
   });
-  const [availability, setAvailability] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -1427,8 +1389,7 @@ export default function App() {
 
   const refresh = async () => {
     try {
-      const [a, s] = await Promise.all([fetchAvailability(), fetchSettings()]);
-      setAvailability(a);
+      const s = await fetchSettings();
       setSettings({ ...DEFAULT_SETTINGS, ...s });
       setLoadError("");
     } catch (e) {
@@ -1437,6 +1398,8 @@ export default function App() {
     }
   };
   useEffect(() => { (async () => { await refresh(); setLoading(false); })(); }, []);
+  // 管理者ログイン後は、認証済みセッションで設定(定員など)を取り直す
+  useEffect(() => { if (session) refresh(); }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const saveSettingsHandler = async (next) => {
     setSettings(next);
@@ -1490,7 +1453,7 @@ export default function App() {
           {/* 管理者リンクは非表示（管理者はメール内URLからアクセス） */}
         </div>
       ) : view === "book" ? (
-        <BookingApp availability={availability} settings={settings} refresh={refresh} goHome={() => setView("home")} />
+        <BookingApp goHome={() => setView("home")} />
       ) : view === "cancel" ? (
         <CancelApp settings={settings} refresh={refresh} goHome={() => setView("home")} />
       ) : (
