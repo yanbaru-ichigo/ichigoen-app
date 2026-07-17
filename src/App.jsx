@@ -15,7 +15,7 @@ import {
 /* ============ Supabase ============ */
 const SUPABASE_URL = "https://cnhntxoxrvjajeyvibnu.supabase.co";
 const SUPABASE_ANON_KEY =
-  "eyJhbGci••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••";
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNuaG50eG94cnZqYWpleXZpYm51Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMxNTE4NzUsImV4cCI6MjA5ODcyNzg3NX0.gskPbydZS8zsuE8GdCpYR_RVS0Ta1104HFImDjVP-LQ";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: false },
 });
